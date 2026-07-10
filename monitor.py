@@ -25,134 +25,151 @@ ROUTINE_KEYWORDS = [
 ]
 
 HIGH_VALUE_KEYWORDS = [
-    "FINANCIAL RESULTS", "EARNINGS", "DIVIDEND", "BONUS", "SPLIT", "ACQUISITION", 
+    "FINANCIAL RESULTS", "EARNINGS", "DIVIDEND", "BONUS", "SPLIT", "ACQUISITION",
     "MERGER", "ORDER WON", "AWARD OF CONTRACT", "CAPACITY EXPANSION", "BOARD MEETING"
 ]
 
 def get_ai_client():
-    """Dynamically returns a client using the currently active operational key."""
+    """Initializes the Gemini client using the currently active key index."""
     global CURRENT_KEY_INDEX
     if not GEMINI_KEYS:
-        raise ValueError("CRITICAL: No Gemini API keys found in environment configuration!")
-    return genai.Client(api_key=GEMINI_KEYS[CURRENT_KEY_INDEX])
+        print("[❌] Critical: No Gemini API keys found in your GitHub secrets!")
+        return None
+    
+    active_key = GEMINI_KEYS[CURRENT_KEY_INDEX]
+    # Masking the key in logs for safety
+    masked_key = f"{active_key[:6]}...{active_key[-4:]}" if len(active_key) > 10 else "Invalid Key"
+    print(f"[🔑] Using API Key Index {CURRENT_KEY_INDEX} ({masked_key})")
+    
+    return genai.Client(api_key=active_key)
 
 def rotate_key():
-    """Rotates to the next free API project key when a quota limit is encountered."""
+    """Rotates to the next available API key in the list."""
     global CURRENT_KEY_INDEX
-    if len(GEMINI_KEYS) > 1:
-        CURRENT_KEY_INDEX = (CURRENT_KEY_INDEX + 1) % len(GEMINI_KEYS)
-        print(f"[🔄] Quota limit triggered. Rotated to API Key Index: {CURRENT_KEY_INDEX}")
-    else:
-        print("[⚠️] Warning: Quota hit but no secondary backup keys are available to rotate.")
+    if len(GEMINI_KEYS) <= 1:
+        print("[⚠️] Only one key available. Pausing to clear temporary rate limit...")
+        time.sleep(15)
+        return
+    
+    CURRENT_KEY_INDEX = (CURRENT_KEY_INDEX + 1) % len(GEMINI_KEYS)
+    print(f"[🔄] Quota limit encountered. Rotating to Key Index: {CURRENT_KEY_INDEX}")
+    time.sleep(2)  # Short cooling pause during rotation
 
-def load_processed_keys():
+def send_telegram_message(text):
+    """Sends a formatted message to your Telegram channel."""
+    if not TELEGRAM_TOKEN:
+        print("[❌] Telegram token missing.")
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
+    try:
+        requests.post(url, json=payload, timeout=10)
+    except Exception as e:
+        print(f"[❌] Failed to transmit Telegram notification: {e}")
+
+def load_cached_announcements():
+    """Loads previously processed announcement links to prevent duplicate alerts."""
     if os.path.exists(CACHE_FILE):
         with open(CACHE_FILE, "r") as f:
             return set(line.strip() for line in f if line.strip())
     return set()
 
-def save_processed_key(key):
+def cache_announcement(link):
+    """Appends a newly processed link to the local text storage file."""
     with open(CACHE_FILE, "a") as f:
-        f.write(f"{key}\n")
+        f.write(f"{link}\n")
 
-def get_all_nse_tickers():
-    csv_url = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
-    headers = {"User-Agent": "Mozilla/5.0"}
+def fetch_nse_feed():
+    """Fetches and parses the real-time NSE RSS XML feed data."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
     try:
-        response = requests.get(csv_url, headers=headers, timeout=12)
+        response = requests.get(RSS_URL, headers=headers, timeout=15)
         if response.status_code == 200:
-            lines = response.content.decode('utf-8').splitlines()
-            df = pd.read_csv(requests.compat.StringIO('\n'.join(lines)))
-            df.columns = df.columns.str.strip()
-            return set(t.upper() for t in df['SYMBOL'].dropna().astype(str).str.strip().tolist())
-    except Exception:
-        pass
-    return {"SUZLON", "POWERGRID", "HCLTECH", "RELIANCE", "SBIN"}
+            return ET.fromstring(response.content)
+    except Exception as e:
+        print(f"[❌] Error querying the National Stock Exchange feed endpoint: {e}")
+    return None
 
-def analyze_announcement_with_ai(headline, details):
-    prompt = f"Headline: {headline}\nDetails: {details}\nProvide output as: Category | Sentiment | Bulleted Summary"
+def main():
+    print("[🚀] Launching Fail-Safe StockInsights Engine Pool...")
     
-    # Try up to 3 times to rotate through keys if a quota exhaustion error occurs
-    for _ in range(min(3, len(GEMINI_KEYS))):
-        try:
-            ai = get_ai_client()
-            response = ai.models.generate_content(model='gemini-2.0-flash-lite', contents=prompt)
-            return response.text.strip()
-        except Exception as e:
-            # Check for standard Google quota/rate limit error strings (e.g., ResourceExhausted, 429)
-            if "429" in str(e) or "quota" in str(e).lower() or "exhausted" in str(e).lower():
-                rotate_key()
-                continue
-            return f"Business Update | ⚪ Neutral | - Summary bypass note: {e}"
-    return "Business Update | ⚪ Neutral | - All active keys exhausted for this cycle frame."
+    root = fetch_nse_feed()
+    if root is None:
+        print("[❌] Empty or invalid response from exchange server. Terminating run.")
+        return
+        
+    cached_links = load_cached_announcements()
+    items = root.findall(".//item")
+    print(f"[📊] Discovered {len(items)} total live items on the exchange terminal feed.")
+    
+    # Track consecutive failures to prevent permanent looping
+    consecutive_failures = 0
+    max_allowed_failures = len(GEMINI_KEYS) * 2
 
-def send_telegram(text):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    try:
-        requests.post(url, json={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}, timeout=5)
-    except Exception:
-        pass
+    for item in reversed(items):
+        link = item.find("link").text if item.find("link") is not None else ""
+        if not link or link in cached_links:
+            continue
+            
+        title = item.find("title").text if item.find("title") is not None else ""
+        desc = item.find("description").text if item.find("description") is not None else ""
+        upper_text = f"{title} {desc}".upper()
+        
+        is_high_value = any(k in upper_text for k in HIGH_VALUE_KEYWORDS)
+        is_routine = any(k in upper_text for k in ROUTINE_KEYWORDS)
+        
+        if not (is_high_value or is_routine):
+            continue
+            
+        print(f"[🎯] Matching Announcement Found: {title}")
+        
+        # Build an analytical prompt sequence for the model
+        prompt = (
+            f"Analyze this Indian Stock Market Corporate Announcement framework:\n\n"
+            f"Heading: {title}\nDetails: {desc}\n\n"
+            f"Provide a brief 3-bullet point summary focusing exclusively on commercial impact, "
+            f"numerical figures, or structural structural transformations."
+        )
+        
+        ai_success = False
+        while not ai_success:
+            if consecutive_failures >= max_allowed_failures:
+                print("[🚨] All keys in the secret pool are exhausted. Sleeping for 15 seconds...")
+                time.sleep(15)
+                consecutive_failures = 0 # reset tracking clock
+                
+            client = get_ai_client()
+            if not client:
+                break
+                
+            try:
+                # Utilizing the verified free-tier standard flash engine configuration
+                response = client.models.generate_content(
+                    model='gemini-2.0-flash-lite', 
+                    contents=prompt
+                )
+                summary = response.text
+                
+                # Format raw payload output for the Telegram client channel presentation
+                header_icon = "🔥 HIGH PRIORITY ALERT" if is_high_value else "📋 ROUTINE ANNOUNCEMENT"
+                tele_payload = f"*{header_icon}*\n\n*Company:* {title}\n\n*AI Summary:*\n{summary}\n\n🔗 [View Official Document]({link})"
+                
+                send_telegram_message(tele_payload)
+                cache_announcement(link)
+                
+                ai_success = True
+                consecutive_failures = 0 # reset tracker on successful run
+                
+                # 🛑 THE FIX: Mandatory 4-second delay prevents hitting your Requests-Per-Minute ceiling
+                print("[💤] Request complete. Cooling down for 4 seconds...")
+                time.sleep(4)
+                
+            except Exception as e:
+                print(f"[⚠️] API Error encountered: {e}")
+                consecutive_failures += 1
+                rotate_key()
 
 if __name__ == "__main__":
-    print(f"[🚀] Launching Unlimited Fail-Safe Engine Pool with {len(GEMINI_KEYS)} keys.")
-    processed_history = load_processed_keys()
-    tickers = get_all_nse_tickers()
-    
-    headers = {"User-Agent": "Mozilla/5.0"}
-    try:
-        res = requests.get(RSS_URL, headers=headers, timeout=8)
-        if res.status_code == 200:
-            root = ET.fromstring(res.content)
-            
-            for item in reversed(root.findall('.//item')):
-                title = item.find('title').text or "UNKNOWN"
-                pub_date = item.find('pubDate').text or "N/A"
-                link_url = item.find('link').text or ""
-                desc = item.find('description').text or ""
-                
-                unique_key = f"{title}_{pub_date}"
-                if unique_key in processed_history:
-                    continue
-                    
-                matched = False
-                title_up, link_up = title.upper(), link_url.upper()
-                for sym in tickers:
-                    if sym in title_up or sym in link_up:
-                        matched = True
-                        break
-                        
-                if matched:
-                    is_routine = any(kw in title_up for kw in ROUTINE_KEYWORDS)
-                    is_high_value = any(kw in title_up for kw in HIGH_VALUE_KEYWORDS)
-                    
-                    if is_routine and not is_high_value:
-                        msg = (
-                            f"⚡ *Company:* {title}\n\n"
-                            f"📄 *Category:* Routine Compliance | ⚪ Neutral\n\n"
-                            f"📝 *Summary:* Standard administrative exchange filing.\n\n"
-                            f"⏰ *Time:* {pub_date}\n"
-                        )
-                        if link_url:
-                            msg += f"📁 *More:* [View Original Document]({link_url})"
-                        send_telegram(msg)
-                    else:
-                        analysis = analyze_announcement_with_ai(title, desc)
-                        parts = analysis.split('|')
-                        if len(parts) >= 3:
-                            cat, sent, summ = parts[0].strip(), parts[1].strip(), parts[2].strip()
-                            msg = (
-                                f"⚡ *Company:* {title}\n\n"
-                                f"📄 *Category:* {cat} | {sent}\n\n"
-                                f"📝 *AI Summary:*\n{summ}\n\n"
-                                f"⏰ *Time:* {pub_date}\n"
-                            )
-                        else:
-                            msg = f"⚡ *Company:* {title}\n\n📝 *Analysis:*\n{analysis}\n\n⏰ *Time:* {pub_date}\n"
-                        
-                        if link_url:
-                            msg += f"📁 *More:* [View Original Document]({link_url})"
-                        send_telegram(msg)
-                    
-                save_processed_key(unique_key)
-    except Exception as main_err:
-        print(f"[-] Loop processing note: {main_err}")
+    main()
