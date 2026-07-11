@@ -7,7 +7,7 @@ from google import genai
 
 # --- SYSTEM SETTINGS & SECRETS ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-CHAT_ID = "-5017305086"  # Your target channel ID
+CHAT_ID = "-1004369470593"  # Your target channel ID
 RSS_URL = "https://nsearchives.nseindia.com/content/RSS/Online_announcements.xml"
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
