@@ -4,6 +4,9 @@ on:
     - cron: '*/5 * * * *'  # Runs automatically every 5 minutes, 24/7
   workflow_dispatch:       # Allows you to click a button and test it manually
 
+permissions:
+  contents: write
+  
 jobs:
   run-monitor:
     runs-on: ubuntu-latest
