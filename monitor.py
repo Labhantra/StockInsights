@@ -2,18 +2,16 @@ import os
 import time
 import requests
 import xml.etree.ElementTree as ET
-import pandas as pd
 from google import genai
 
 # --- SECURE CREDENTIAL ARRAYS ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-CHAT_ID = "-5017305086"
+CHAT_ID = "-5017305086"  # Updated with your verified group Chat ID
 RAW_KEYS = os.environ.get("GEMINI_API_KEY", "")
 
 # Automatically split the comma-separated string into a list of keys
 GEMINI_KEYS = [k.strip() for k in RAW_KEYS.split(",") if k.strip()]
 CURRENT_KEY_INDEX = 0
-
 RSS_URL = "https://nsearchives.nseindia.com/content/RSS/Online_announcements.xml"
 CACHE_FILE = "processed_announcements.txt"
 
@@ -23,7 +21,6 @@ ROUTINE_KEYWORDS = [
     "CLOSURE OF TRADING WINDOW", "COMPLIANCE CERTIFICATE", "ISIN", "NCLT UPDATE",
     "REGULATION 39", "REGULATION 7", "REGULATION 30", "REPLY TO CLARIFICATION"
 ]
-
 HIGH_VALUE_KEYWORDS = [
     "FINANCIAL RESULTS", "EARNINGS", "DIVIDEND", "BONUS", "SPLIT", "ACQUISITION",
     "MERGER", "ORDER WON", "AWARD OF CONTRACT", "CAPACITY EXPANSION", "BOARD MEETING"
@@ -37,7 +34,6 @@ def get_ai_client():
         return None
     
     active_key = GEMINI_KEYS[CURRENT_KEY_INDEX]
-    # Masking the key in logs for safety
     masked_key = f"{active_key[:6]}...{active_key[-4:]}" if len(active_key) > 10 else "Invalid Key"
     print(f"[🔑] Using API Key Index {CURRENT_KEY_INDEX} ({masked_key})")
     
@@ -53,10 +49,10 @@ def rotate_key():
     
     CURRENT_KEY_INDEX = (CURRENT_KEY_INDEX + 1) % len(GEMINI_KEYS)
     print(f"[🔄] Quota limit encountered. Rotating to Key Index: {CURRENT_KEY_INDEX}")
-    time.sleep(2)  # Short cooling pause during rotation
+    time.sleep(2)
 
 def send_telegram_message(text):
-    """Sends a formatted message to your Telegram channel."""
+    """Sends a formatted message to your Telegram channel/group."""
     if not TELEGRAM_TOKEN:
         print("[❌] Telegram token missing.")
         return
@@ -104,10 +100,19 @@ def main():
     items = root.findall(".//item")
     print(f"[📊] Discovered {len(items)} total live items on the exchange terminal feed.")
     
-    # Track consecutive failures to prevent permanent looping
+    # FREE TIER SAFETY NET: If the history cache file is empty (first run),
+    # bookmark all current items as read so we don't blow your free daily limits.
+    if not cached_links:
+        print("[ℹ️] History log cache is clean. Pre-caching existing feed items to protect free tier credits...")
+        for item in items:
+            link = item.find("link").text if item.find("link") is not None else ""
+            if link:
+                cache_announcement(link)
+        print("[✅] Complete current live feed bookmarked successfully! System will track new alerts on next cycle.")
+        return
+
     consecutive_failures = 0
     max_allowed_failures = len(GEMINI_KEYS) * 2
-
     for item in reversed(items):
         link = item.find("link").text if item.find("link") is not None else ""
         if not link or link in cached_links:
@@ -125,12 +130,11 @@ def main():
             
         print(f"[🎯] Matching Announcement Found: {title}")
         
-        # Build an analytical prompt sequence for the model
         prompt = (
             f"Analyze this Indian Stock Market Corporate Announcement framework:\n\n"
             f"Heading: {title}\nDetails: {desc}\n\n"
             f"Provide a brief 3-bullet point summary focusing exclusively on commercial impact, "
-            f"numerical figures, or structural structural transformations."
+            f"numerical figures, or structural transformations."
         )
         
         ai_success = False
@@ -138,21 +142,19 @@ def main():
             if consecutive_failures >= max_allowed_failures:
                 print("[🚨] All keys in the secret pool are exhausted. Sleeping for 15 seconds...")
                 time.sleep(15)
-                consecutive_failures = 0 # reset tracking clock
+                consecutive_failures = 0
                 
             client = get_ai_client()
             if not client:
                 break
                 
             try:
-                # Utilizing the verified free-tier standard flash engine configuration
                 response = client.models.generate_content(
                     model='gemini-2.0-flash-lite', 
                     contents=prompt
                 )
                 summary = response.text
                 
-                # Format raw payload output for the Telegram client channel presentation
                 header_icon = "🔥 HIGH PRIORITY ALERT" if is_high_value else "📋 ROUTINE ANNOUNCEMENT"
                 tele_payload = f"*{header_icon}*\n\n*Company:* {title}\n\n*AI Summary:*\n{summary}\n\n🔗 [View Official Document]({link})"
                 
@@ -160,9 +162,9 @@ def main():
                 cache_announcement(link)
                 
                 ai_success = True
-                consecutive_failures = 0 # reset tracker on successful run
+                consecutive_failures = 0
                 
-                # 🛑 THE FIX: Mandatory 4-second delay prevents hitting your Requests-Per-Minute ceiling
+                # Mandatory 4-second delay to prevent hitting API ceiling
                 print("[💤] Request complete. Cooling down for 4 seconds...")
                 time.sleep(4)
                 
