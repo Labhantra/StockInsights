@@ -1,35 +1,42 @@
-name: 24/7 NSE High-Speed Monitor
+name: High-Speed Exchange Relay Engine
 
 on:
-  schedule:
-    - cron: '30 3 * * 1' # System automated kickstart every Monday morning at 9:00 AM IST
-  workflow_dispatch: # Allows manual UI launch click
-
-permissions:
-  contents: write
+  push:
+    branches:
+      - main
+  workflow_dispatch: # Allows you to manually trigger the script from the GitHub website or app
 
 jobs:
-  run-monitor:
+  monitor-stream:
     runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: true
+    
+    # Prevents GitHub from cancelling the workflow early
+    timeout-minutes: 360 
 
-      - name: Setup Python
+    steps:
+      - name: Checkout Code Repository
+        uses: actions/checkout@v4
+
+      - name: Set Up Python Environment
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+          cache: 'pip' # Speeds up subsequent run initializations
 
-      - name: Install Dependencies
+      - name: Install System Dependencies
         run: |
-          pip install google-genai requests pandas
+          python -m pip install --upgrade pip
+          pip install google-genai requests
 
-      - name: Run Active Engine Loop
+      - name: Execute Monitor Script Loop
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # System Relay Secrets
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           GH_PAT: ${{ secrets.GH_PAT }}
-        run: |
-          python monitor.py
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          
+          # Isolated Multi-Key Multipliers for Free-Tier Rotation
+          GEMINI_API_KEY_1: ${{ secrets.GEMINI_API_KEY_1 }}
+          GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
+          GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_KEY_3 }}
+        run: python your_script_name.py
