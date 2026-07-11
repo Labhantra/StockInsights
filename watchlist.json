@@ -1,6 +1,18 @@
 {
-  "tracking_mode": "All Stocks (Default)",
-  "selected_watchlist": ["SUZLON", "POWERGRID"],
-  "high_value_keywords": ["FINANCIAL RESULTS", "DIVIDEND", "BONUS", "RIGHTS ISSUE"],
-  "routine_keywords": ["SHAREHOLDING PATTERN", "CLARIFICATION", "LOSS OF SHARE CERTIFICATE"]
+  "tracking_mode": "Filtered Custom Watchlist",
+  "selected_watchlist": [
+    "SUZLON",
+    "POWERGRID"
+  ],
+  "high_value_keywords": [
+    "FINANCIAL RESULTS",
+    "DIVIDEND",
+    "BONUS",
+    "RIGHTS ISSUE"
+  ],
+  "routine_keywords": [
+    "SHAREHOLDING PATTERN",
+    "CLARIFICATION",
+    "LOSS OF SHARE CERTIFICATE"
+  ]
 }
