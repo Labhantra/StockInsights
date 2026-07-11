@@ -7,7 +7,7 @@ from google import genai
 
 # --- SECURE CREDENTIAL ARRAYS ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-CHAT_ID = "-4353274640"
+CHAT_ID = "-5017305086"
 RAW_KEYS = os.environ.get("GEMINI_API_KEY", "")
 
 # Automatically split the comma-separated string into a list of keys
