@@ -69,11 +69,13 @@ def load_live_configs():
         }
 
 def split_headline(desc):
-    """Splits the RSS description into a short subject line and a detail line."""
+    """Splits the RSS description into a subject line and a detail line.
+    NSE feed format is: "<detail text> |SUBJECT: <category/subject text>"
+    """
     if not desc:
         return "N/A", ""
-    if " - " in desc:
-        subject, detail = desc.split(" - ", 1)
+    if "|SUBJECT:" in desc:
+        detail, subject = desc.split("|SUBJECT:", 1)
         return subject.strip(), detail.strip()
     return desc.strip(), ""
 
@@ -89,6 +91,7 @@ def analyze_with_ai(headline, details):
     2. Sentiment: One from ["🟢 Positive", "⚪ Neutral", "🔴 Negative"]
     3. Summary: EXACTLY 3-4 bullet points, each on its own line, each starting with '-'.
        Each bullet should be a clear, standalone fact (dates, figures, names, actions).
+       Do NOT repeat the Category or Sentiment inside the summary bullets.
        No intro text, no closing text, no markdown bold.
     """
 
@@ -184,7 +187,7 @@ def check_feed_cycle(is_baseline=False):
                 f"⏰ *Published:* {pub_date}\n\n"
                 f"📄 *Category:* {category} | {sentiment}\n\n"
                 f"📝 *Headline:* {headline_subject}\n"
-                f">>{headline_detail}\n\n"
+                f">> {headline_detail}\n\n"
                 f"📝 *AI Summary:* \n{clean_summary}\n\n"
                 f"📎 *Filing Document:* {doc_text}"
             )
