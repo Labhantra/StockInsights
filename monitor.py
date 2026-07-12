@@ -45,7 +45,6 @@ def get_next_client():
     """Rotates through the available keys sequentially to balance free-tier limits."""
     global current_key_index
     key = API_KEYS[current_key_index]
-    # Point the index to the next key for the next run
     current_key_index = (current_key_index + 1) % len(API_KEYS)
     print(f"[🔄 Key Rotation] Using API Key Slot {current_key_index + 1} for this request.")
     return OpenAI(api_key=key, base_url=GROQ_BASE_URL)
@@ -69,6 +68,15 @@ def load_live_configs():
             "routine_keywords": ["SHAREHOLDING PATTERN"]
         }
 
+def split_headline(desc):
+    """Splits the RSS description into a short subject line and a detail line."""
+    if not desc:
+        return "N/A", ""
+    if " - " in desc:
+        subject, detail = desc.split(" - ", 1)
+        return subject.strip(), detail.strip()
+    return desc.strip(), ""
+
 def analyze_with_ai(headline, details):
     prompt = f"""
     Analyze the following Indian stock market filing:
@@ -79,10 +87,11 @@ def analyze_with_ai(headline, details):
     Rules:
     1. Category: One from ["Business Update", "Routine", "Financial Results", "Credit Rating"]
     2. Sentiment: One from ["🟢 Positive", "⚪ Neutral", "🔴 Negative"]
-    3. Summary: 2-3 short bullets starting with '-'. Clear facts only. No intro text.
+    3. Summary: EXACTLY 3-4 bullet points, each on its own line, each starting with '-'.
+       Each bullet should be a clear, standalone fact (dates, figures, names, actions).
+       No intro text, no closing text, no markdown bold.
     """
 
-    # Try up to 3 times (once per key) if an authentication or rate limit error happens
     for attempt in range(len(API_KEYS)):
         try:
             client = get_next_client()
@@ -161,18 +170,24 @@ def check_feed_cycle(is_baseline=False):
                 continue
 
             print(f"[Match Found] Analyzing announcement: {title}")
-            category, sentiment, ai_summary = analyze_with_ai(title, desc)
+
+            headline_subject, headline_detail = split_headline(desc)
+            category, sentiment, ai_summary = analyze_with_ai(headline_subject, headline_detail)
 
             clean_summary = ai_summary.replace("**", "").replace("*", "")
 
+            doc_text = f"[View PDF Document]({link})" if link else "No Document"
+
             message = (
+                f"🚨 *NEW NSE ANNOUNCEMENT* 🚨\n\n"
                 f"⚡ *Company:* {title}\n\n"
+                f"⏰ *Published:* {pub_date}\n\n"
                 f"📄 *Category:* {category} | {sentiment}\n\n"
-                f"📝 *AI Summary:*\n{clean_summary}\n\n"
-                f"⏰ *Time:* {pub_date}\n"
+                f"📝 *Headline:* {headline_subject}\n"
+                f">>{headline_detail}\n\n"
+                f"📝 *AI Summary:* \n{clean_summary}\n\n"
+                f"📎 *Filing Document:* {doc_text}"
             )
-            if link:
-                message += f"📁 *Filing File:* [View Original Document]({link})"
 
             send_telegram_message(message)
             time.sleep(1)
