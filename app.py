@@ -139,22 +139,23 @@ with tab1:
     # --- SEARCH & ADD (single searchable dropdown, no separate results row) ---
     st.markdown('<div class="section-title">Search & Add Equity Symbols</div>', unsafe_allow_html=True)
 
-    if "search_select" not in st.session_state:
-        st.session_state.search_select = ""
+    if "search_key_counter" not in st.session_state:
+        st.session_state.search_key_counter = 0
 
     search_col, add_col = st.columns([4, 1], gap="small")
     picked_symbol = search_col.selectbox(
         "Search NSE ticker symbols",
-        options=[""] + NSE_TICKERS,
-        format_func=lambda x: "Type to search a symbol..." if x == "" else x,
+        options=NSE_TICKERS,
+        index=None,
+        placeholder="Ticker search...",
         label_visibility="collapsed",
-        key="search_select"
+        key=f"search_select_{st.session_state.search_key_counter}"
     )
 
     if add_col.button("➕ Add", type="primary", use_container_width=True):
         if picked_symbol and picked_symbol not in st.session_state.watchlist:
             st.session_state.watchlist.append(picked_symbol)
-            st.session_state.search_select = ""  # clear the search box for the next lookup
+            st.session_state.search_key_counter += 1  # forces a brand-new, empty selectbox on rerun
             st.rerun()
         elif not picked_symbol:
             st.warning("Search and select a symbol first.")
