@@ -26,23 +26,6 @@ st.markdown("""
         color: #E5E7EB;
     }
 
-    /* Section card wrapper */
-    .section-card {
-        background-color: #12161C;
-        padding: 20px 24px;
-        border-radius: 10px;
-        border: 1px solid #232833;
-        margin-bottom: 18px;
-    }
-    .section-title {
-        font-size: 15px;
-        font-weight: 600;
-        color: #9CA3AF;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        margin-bottom: 10px;
-    }
-
     /* Tracked stock chips (replaces default red multiselect tags) */
     .chip-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
     .stock-chip {
@@ -51,16 +34,35 @@ st.markdown("""
         background-color: #1E293B;
         color: #7DD3D8;
         border: 1px solid #2DD4BF55;
-        padding: 6px 12px;
-        border-radius: 20px;
+        border-right: none;
+        padding: 8px 14px;
+        border-radius: 20px 0 0 20px;
         font-size: 14px;
         font-weight: 500;
+        height: 38px;
+        box-sizing: border-box;
     }
 
-    /* Override any native multiselect tag color to match palette (used in removal widget) */
+    /* Override any native multiselect tag color to match palette (used elsewhere) */
     span[data-baseweb="tag"] {
         background-color: #1E293B !important;
         border: 1px solid #2DD4BF55 !important;
+    }
+
+    /* Remove-button styled to visually fuse onto the right side of the chip */
+    .remove-btn-col button {
+        border-radius: 0 20px 20px 0 !important;
+        border: 1px solid #2DD4BF55 !important;
+        border-left: none !important;
+        background-color: #1E293B !important;
+        color: #7DD3D8 !important;
+        height: 38px !important;
+        min-height: 38px !important;
+        padding: 0 10px !important;
+    }
+    .remove-btn-col button:hover {
+        background-color: #2A3B52 !important;
+        color: #FCA5A5 !important;
     }
 
     /* Primary button styling -> teal instead of default red */
@@ -161,25 +163,16 @@ with tab1:
         index=0 if current_config.get("tracking_mode") == "All Stocks (Default)" else 1
     )
 
-    # --- SECTION 1: SEARCH & ADD (separate from the tracked-stock display) ---
-    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    # --- SEARCH & ADD (single searchable dropdown, no separate results row) ---
     st.markdown('<div class="section-title">Search & Add Equity Symbols</div>', unsafe_allow_html=True)
 
-    search_col, add_col = st.columns([4, 1])
-    search_query = search_col.text_input(
+    search_col, add_col = st.columns([4, 1], gap="small")
+    picked_symbol = search_col.selectbox(
         "Search NSE ticker symbols",
-        placeholder="Type a symbol, e.g. RELIANCE, TCS, SUZLON...",
+        options=[""] + NSE_TICKERS,
+        format_func=lambda x: "Type to search a symbol..." if x == "" else x,
         label_visibility="collapsed"
     )
-
-    filtered_options = [t for t in NSE_TICKERS if search_query.upper() in t] if search_query else []
-    picked_symbol = None
-    if filtered_options:
-        picked_symbol = st.selectbox(
-            "Matching symbols",
-            options=filtered_options[:25],
-            label_visibility="collapsed"
-        )
 
     if add_col.button("➕ Add", type="primary", use_container_width=True):
         if picked_symbol and picked_symbol not in st.session_state.watchlist:
@@ -190,33 +183,29 @@ with tab1:
         else:
             st.info(f"{picked_symbol} is already tracked.")
 
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    # --- SECTION 2: CURRENTLY TRACKED STOCKS (visually separate section) ---
-    st.markdown('<div class="section-card">', unsafe_allow_html=True)
-    st.markdown('<div class="section-title">Currently Tracked Stocks</div>', unsafe_allow_html=True)
+    # --- CURRENTLY TRACKED STOCKS (same module, no divider) ---
+    st.markdown('<div class="section-title" style="margin-top:20px;">Currently Tracked Stocks</div>', unsafe_allow_html=True)
 
     if not st.session_state.watchlist:
         st.caption("No stocks added yet. Use the search box above to add symbols.")
     else:
-        # Render each tracked stock as its own row with a remove button,
-        # grouped visually in rows of 4.
         cols_per_row = 4
         for i in range(0, len(st.session_state.watchlist), cols_per_row):
             row_symbols = st.session_state.watchlist[i:i + cols_per_row]
-            row_cols = st.columns(cols_per_row)
+            row_cols = st.columns(cols_per_row, gap="small")
             for j, symbol in enumerate(row_symbols):
                 with row_cols[j]:
-                    chip_col, remove_col = st.columns([3, 1])
+                    chip_col, remove_col = st.columns([3, 1], gap="small")
                     chip_col.markdown(
                         f'<div class="stock-chip">{symbol}</div>',
                         unsafe_allow_html=True
                     )
-                    if remove_col.button("✕", key=f"remove_{symbol}"):
-                        st.session_state.watchlist.remove(symbol)
-                        st.rerun()
-
-    st.markdown('</div>', unsafe_allow_html=True)
+                    with remove_col:
+                        st.markdown('<div class="remove-btn-col">', unsafe_allow_html=True)
+                        if st.button("✕", key=f"remove_{symbol}"):
+                            st.session_state.watchlist.remove(symbol)
+                            st.rerun()
+                        st.markdown('</div>', unsafe_allow_html=True)
 
     # --- KEYWORD FILTERS ---
     st.subheader("Keyword Filter Definitions")
