@@ -26,43 +26,16 @@ st.markdown("""
         color: #E5E7EB;
     }
 
-    /* Tracked stock chips (replaces default red multiselect tags) */
-    .chip-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
-    .stock-chip {
-        display: inline-flex;
-        align-items: center;
-        background-color: #1E293B;
-        color: #7DD3D8;
-        border: 1px solid #2DD4BF55;
-        border-right: none;
-        padding: 8px 14px;
-        border-radius: 20px 0 0 20px;
-        font-size: 14px;
-        font-weight: 500;
-        height: 38px;
-        box-sizing: border-box;
-    }
-
-    /* Override any native multiselect tag color to match palette (used elsewhere) */
+    /* Tracked stock tags - native multiselect tag restyled to match palette (fused pill+x, like the reference design) */
     span[data-baseweb="tag"] {
-        background-color: #1E293B !important;
-        border: 1px solid #2DD4BF55 !important;
+        background-color: #0F766E !important;
+        border: 1px solid #2DD4BF !important;
+        color: #ECFEFF !important;
+        border-radius: 20px !important;
+        font-weight: 500 !important;
     }
-
-    /* Remove-button styled to visually fuse onto the right side of the chip */
-    .remove-btn-col button {
-        border-radius: 0 20px 20px 0 !important;
-        border: 1px solid #2DD4BF55 !important;
-        border-left: none !important;
-        background-color: #1E293B !important;
-        color: #7DD3D8 !important;
-        height: 38px !important;
-        min-height: 38px !important;
-        padding: 0 10px !important;
-    }
-    .remove-btn-col button:hover {
-        background-color: #2A3B52 !important;
-        color: #FCA5A5 !important;
+    span[data-baseweb="tag"] svg {
+        fill: #ECFEFF !important;
     }
 
     /* Primary button styling -> teal instead of default red */
@@ -166,17 +139,22 @@ with tab1:
     # --- SEARCH & ADD (single searchable dropdown, no separate results row) ---
     st.markdown('<div class="section-title">Search & Add Equity Symbols</div>', unsafe_allow_html=True)
 
+    if "search_select" not in st.session_state:
+        st.session_state.search_select = ""
+
     search_col, add_col = st.columns([4, 1], gap="small")
     picked_symbol = search_col.selectbox(
         "Search NSE ticker symbols",
         options=[""] + NSE_TICKERS,
         format_func=lambda x: "Type to search a symbol..." if x == "" else x,
-        label_visibility="collapsed"
+        label_visibility="collapsed",
+        key="search_select"
     )
 
     if add_col.button("➕ Add", type="primary", use_container_width=True):
         if picked_symbol and picked_symbol not in st.session_state.watchlist:
             st.session_state.watchlist.append(picked_symbol)
+            st.session_state.search_select = ""  # clear the search box for the next lookup
             st.rerun()
         elif not picked_symbol:
             st.warning("Search and select a symbol first.")
@@ -189,23 +167,18 @@ with tab1:
     if not st.session_state.watchlist:
         st.caption("No stocks added yet. Use the search box above to add symbols.")
     else:
-        cols_per_row = 4
-        for i in range(0, len(st.session_state.watchlist), cols_per_row):
-            row_symbols = st.session_state.watchlist[i:i + cols_per_row]
-            row_cols = st.columns(cols_per_row, gap="small")
-            for j, symbol in enumerate(row_symbols):
-                with row_cols[j]:
-                    chip_col, remove_col = st.columns([3, 1], gap="small")
-                    chip_col.markdown(
-                        f'<div class="stock-chip">{symbol}</div>',
-                        unsafe_allow_html=True
-                    )
-                    with remove_col:
-                        st.markdown('<div class="remove-btn-col">', unsafe_allow_html=True)
-                        if st.button("✕", key=f"remove_{symbol}"):
-                            st.session_state.watchlist.remove(symbol)
-                            st.rerun()
-                        st.markdown('</div>', unsafe_allow_html=True)
+        # Native multiselect gives a truly fused pill+x tag (styled teal via CSS below)
+        # instead of a hand-built chip + separate button that can't be pixel-joined.
+        tracked_now = st.multiselect(
+            "Tap the × on a tag to remove it",
+            options=st.session_state.watchlist,
+            default=st.session_state.watchlist,
+            key="tracked_stocks_display",
+            label_visibility="collapsed"
+        )
+        if tracked_now != st.session_state.watchlist:
+            st.session_state.watchlist = tracked_now
+            st.rerun()
 
     # --- KEYWORD FILTERS ---
     st.subheader("Keyword Filter Definitions")
