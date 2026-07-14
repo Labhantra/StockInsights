@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import json
+import base64
 import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
@@ -56,6 +57,22 @@ def clean_expired_cache():
         del processed_cache[k]
 
 def load_live_configs():
+    # Prefer fetching the live version straight from GitHub, since the local checkout
+    # is a frozen snapshot from when this ~5h50m job started. Without this, changes
+    # made in the Streamlit dashboard mid-run wouldn't apply until the next handover.
+    if GH_PAT and GITHUB_REPOSITORY:
+        try:
+            url = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/contents/watchlist.json"
+            headers = {"Authorization": f"token {GH_PAT}", "Accept": "application/vnd.github.v3+json"}
+            res = requests.get(url, headers=headers, timeout=8)
+            if res.status_code == 200:
+                content = base64.b64decode(res.json()["content"]).decode("utf-8")
+                return json.loads(content)
+            else:
+                print(f"[⚠️] Remote config fetch returned {res.status_code}, falling back to local file.")
+        except Exception as e:
+            print(f"[⚠️] Remote config fetch failed, falling back to local file: {e}")
+
     try:
         with open("watchlist.json", "r") as f:
             return json.load(f)
@@ -201,7 +218,8 @@ def check_feed_cycle(is_baseline=False):
 def trigger_workflow_handover():
     if not GH_PAT or not GITHUB_REPOSITORY:
         print("[Handover] GitHub settings missing. Stopping loop pipeline.")
-        return
+        send_telegram_message("⚠️ *Handover Failed:* GH_PAT or GITHUB_REPOSITORY secret is missing. Monitor loop has stopped.")
+        sys.exit(1)
 
     url = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/actions/workflows/run.yml/dispatches"
     headers = {
@@ -215,8 +233,19 @@ def trigger_workflow_handover():
             sys.exit(0)
         else:
             print(f"[❌] Handoff runner deployment failed: {res.status_code} - {res.text}")
+            send_telegram_message(
+                f"⚠️ *Handover Failed:* GitHub dispatch returned {res.status_code}.\n"
+                f"Details: {res.text[:300]}\n\n"
+                f"Monitor loop has stopped. Manually re-run the workflow from the Actions tab."
+            )
+            sys.exit(1)
     except Exception as e:
         print(f"[❌] Fatal link failure during handover transition: {e}")
+        send_telegram_message(
+            f"⚠️ *Handover Failed:* Network/exception error during handoff: {e}\n\n"
+            f"Monitor loop has stopped. Manually re-run the workflow from the Actions tab."
+        )
+        sys.exit(1)
 
 if __name__ == "__main__":
     print(f"[🔥] Launching Action Monitor System Node: {datetime.now()}")
