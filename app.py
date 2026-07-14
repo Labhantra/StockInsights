@@ -33,9 +33,26 @@ st.markdown("""
         color: #ECFEFF !important;
         border-radius: 20px !important;
         font-weight: 500 !important;
+        font-size: 15px !important;
+        padding: 6px 10px !important;
     }
     span[data-baseweb="tag"] svg {
         fill: #ECFEFF !important;
+    }
+
+    /* Tracked Stocks box: hide the dropdown/search affordance, keep only the tags, and enlarge the box */
+    .st-key-tracked_stocks_box [data-baseweb="select"] {
+        min-height: 56px;
+    }
+    .st-key-tracked_stocks_box [data-baseweb="select"] input {
+        display: none !important;
+    }
+    .st-key-tracked_stocks_box [data-testid="stMultiSelect"] > div > div:last-child svg {
+        display: none !important;
+    }
+    .st-key-tracked_stocks_box [data-baseweb="select"] > div {
+        padding: 10px !important;
+        gap: 8px !important;
     }
 
     /* Primary button styling -> teal instead of default red */
@@ -170,13 +187,16 @@ with tab1:
     else:
         # Native multiselect gives a truly fused pill+x tag (styled teal via CSS below)
         # instead of a hand-built chip + separate button that can't be pixel-joined.
-        tracked_now = st.multiselect(
-            "Tap the × on a tag to remove it",
-            options=st.session_state.watchlist,
-            default=st.session_state.watchlist,
-            key="tracked_stocks_display",
-            label_visibility="collapsed"
-        )
+        # Wrapped in a keyed container so CSS can hide the dropdown/search affordance,
+        # leaving only the tags themselves visible.
+        with st.container(key="tracked_stocks_box"):
+            tracked_now = st.multiselect(
+                "Tap the × on a tag to remove it",
+                options=st.session_state.watchlist,
+                default=st.session_state.watchlist,
+                key="tracked_stocks_display",
+                label_visibility="collapsed"
+            )
         if tracked_now != st.session_state.watchlist:
             st.session_state.watchlist = tracked_now
             st.rerun()
