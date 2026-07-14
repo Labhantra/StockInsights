@@ -40,14 +40,11 @@ st.markdown("""
         fill: #ECFEFF !important;
     }
 
-    /* Tracked Stocks box: hide the dropdown/search affordance, keep only the tags, and enlarge the box */
+    /* Tracked Stocks box: hide the search/typing input, keep only the tags (and their × icons), enlarge the box */
     .st-key-tracked_stocks_box [data-baseweb="select"] {
         min-height: 56px;
     }
     .st-key-tracked_stocks_box [data-baseweb="select"] input {
-        display: none !important;
-    }
-    .st-key-tracked_stocks_box [data-testid="stMultiSelect"] > div > div:last-child svg {
         display: none !important;
     }
     .st-key-tracked_stocks_box [data-baseweb="select"] > div {
@@ -158,6 +155,8 @@ with tab1:
 
     if "search_key_counter" not in st.session_state:
         st.session_state.search_key_counter = 0
+    if "tracked_key_counter" not in st.session_state:
+        st.session_state.tracked_key_counter = 0
 
     search_col, add_col = st.columns([4, 1], gap="small")
     picked_symbol = search_col.selectbox(
@@ -173,6 +172,7 @@ with tab1:
         if picked_symbol and picked_symbol not in st.session_state.watchlist:
             st.session_state.watchlist.append(picked_symbol)
             st.session_state.search_key_counter += 1  # forces a brand-new, empty selectbox on rerun
+            st.session_state.tracked_key_counter += 1  # forces the tracked-stocks box to re-sync with the new list
             st.rerun()
         elif not picked_symbol:
             st.warning("Search and select a symbol first.")
@@ -194,11 +194,12 @@ with tab1:
                 "Tap the × on a tag to remove it",
                 options=st.session_state.watchlist,
                 default=st.session_state.watchlist,
-                key="tracked_stocks_display",
+                key=f"tracked_stocks_display_{st.session_state.tracked_key_counter}",
                 label_visibility="collapsed"
             )
         if tracked_now != st.session_state.watchlist:
             st.session_state.watchlist = tracked_now
+            st.session_state.tracked_key_counter += 1
             st.rerun()
 
     # --- KEYWORD FILTERS ---
