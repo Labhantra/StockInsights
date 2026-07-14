@@ -1,5 +1,6 @@
 import os
 import sys
+import io
 import time
 import json
 import base64
@@ -7,6 +8,11 @@ import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from openai import OpenAI
+
+try:
+    from pypdf import PdfReader
+except ImportError:
+    PdfReader = None
 
 # ==========================================
 # SYSTEM SETTINGS & SECRETS
@@ -26,7 +32,6 @@ API_KEYS = [
     os.getenv("GROQ_API_KEY_2"),
     os.getenv("GROQ_API_KEY_3")
 ]
-# Filter out any keys that failed to load
 API_KEYS = [k for k in API_KEYS if k]
 
 if not API_KEYS:
@@ -37,10 +42,64 @@ if not TELEGRAM_TOKEN:
     print("[❌ CRITICAL] TELEGRAM_TOKEN is missing!")
     sys.exit(1)
 
-# Keep track of which key index to use next
 current_key_index = 0
 MEMORY_EXPIRY_HOURS = 6
 processed_cache = {}
+
+# ==========================================
+# DETERMINISTIC PRIORITY-TIER CLASSIFICATION
+# Rule-based instead of AI-based, since NSE "Subject" text follows a
+# fairly fixed vocabulary — far more reliable than asking a small model to judge.
+# ==========================================
+CATEGORY_RULES = [
+    ("🔴 Critical", [
+        "order win", "receiving of orders", "bagging", "contract award", "government contract",
+        "export order", "order cancellation", "order termination", "termination of order",
+        "financial results", "quarterly financial", "annual financial",
+        "commercial production", "capacity expansion", "regulatory approval", "usfda",
+        "acquisition", "merger", "amalgamation", "demerger", "corporate restructuring",
+        "buyback", "promoter shareholding", "bulk deal", "block deal",
+        "pledge creation", "pledge release", "pledge of shares",
+        "factory shutdown", "fire", "accident", "insolvency", "nclt",
+        "delisting", "relisting", "management guidance",
+        "credit rating", "auditor resignation", "resignation of", "cessation",
+        "cybersecurity incident"
+    ]),
+    ("🟠 Important", [
+        "business update", "capex", "capital expenditure", "strategic partnership",
+        "joint venture", "product launch", "patent", "intellectual property",
+        "investment", "subsidiary formation", "subsidiary disposal", "incorporation of subsidiary",
+        "fund raising", "qip", "rights issue", "fpo", "preferential issue",
+        "debt raising", "debt reduction", "dividend", "bonus issue", "stock split",
+        "litigation", "tax notice", "gst notice", "force majeure", "board meeting outcome"
+    ]),
+    ("🟡 Strategic", [
+        "investor presentation", "analyst", "investor meet", "conference call", "con. call",
+        "press release", "clarification", "general update", "esg", "sustainability",
+        "memorandum of understanding", " mou ", "board meeting notice",
+        "agm", "egm", "postal ballot", "voting results", "scrutinizer", "scrutiniser"
+    ]),
+    ("⚪ Routine", [
+        "trading window", "record date", "book closure", "compliance filing",
+        "compliance certificate", "newspaper publication", "share certificate",
+        "duplicate share certificate", "authorized signatory", "authorised signatory",
+        "regulation 6(1)", "regulation 7", "disclosure under regulation",
+        "sebi (depositories", "shareholding pattern", "loss of share certificate"
+    ])
+]
+
+def classify_priority(subject_text):
+    """Matches the NSE filing 'Subject' text against the priority-tier keyword rules.
+    Falls back to Strategic (not Routine) when unmatched, so unusual filings still
+    get surfaced for a human glance rather than silently buried as low-priority."""
+    if not subject_text:
+        return "🟡 Strategic"
+    text = subject_text.lower()
+    for tier, keywords in CATEGORY_RULES:
+        for kw in keywords:
+            if kw in text:
+                return tier
+    return "🟡 Strategic"
 
 def get_next_client():
     """Rotates through the available keys sequentially to balance free-tier limits."""
@@ -96,45 +155,97 @@ def split_headline(desc):
         return subject.strip(), detail.strip()
     return desc.strip(), ""
 
-def analyze_with_ai(headline, details):
-    prompt = f"""
-    Analyze the following Indian stock market filing:
-    Headline: {headline}
-    Details: {details}
+def extract_pdf_text(link, max_chars=6000, max_bytes=8_000_000, max_pages=6):
+    """Downloads and extracts text from the filing PDF so the AI summary reflects
+    the actual document content instead of just the short RSS description."""
+    if not link or PdfReader is None:
+        return ""
+    try:
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res = requests.get(link, headers=headers, timeout=15, stream=True)
+        if res.status_code != 200:
+            return ""
 
-    Format your output EXACTLY as: Category | Sentiment | Bulleted Summary
-    Rules:
-    1. Category: One from ["Business Update", "Routine", "Financial Results", "Credit Rating"]
-    2. Sentiment: One from ["🟢 Positive", "⚪ Neutral", "🔴 Negative"]
-    3. Summary: EXACTLY 3-4 bullet points, each on its own line, each starting with '-'.
-       Each bullet should be a clear, standalone fact (dates, figures, names, actions).
-       Do NOT repeat the Category or Sentiment inside the summary bullets.
-       No intro text, no closing text, no markdown bold.
-    """
+        content = b""
+        for chunk in res.iter_content(chunk_size=65536):
+            content += chunk
+            if len(content) > max_bytes:
+                break
+
+        reader = PdfReader(io.BytesIO(content))
+        text_parts = []
+        for page in reader.pages[:max_pages]:
+            try:
+                page_text = page.extract_text() or ""
+            except Exception:
+                page_text = ""
+            if page_text:
+                text_parts.append(page_text)
+            if sum(len(t) for t in text_parts) > max_chars:
+                break
+
+        full_text = "\n".join(text_parts).strip()
+        return full_text[:max_chars]
+    except Exception as e:
+        print(f"[⚠️] PDF text extraction failed: {e}")
+        return ""
+
+def analyze_with_ai(headline, details):
+    """Returns (sentiment, summary_text). Category/priority is handled separately
+    via classify_priority() — deterministic, not AI-generated."""
+    trimmed_details = details.strip() if details else ""
+    if not trimmed_details:
+        trimmed_details = "No further details were available beyond the headline."
+
+    prompt = f"""You are a financial-filing summarizer. Respond with STRICT JSON only.
+No markdown, no preamble, no explanation outside the JSON object.
+
+Filing headline: {headline}
+Filing details: {trimmed_details[:6000]}
+
+Return exactly this JSON structure and nothing else:
+{{"sentiment": "🟢 Positive" or "⚪ Neutral" or "🔴 Negative", "summary": ["fact 1", "fact 2", "fact 3"]}}
+
+Rules:
+- "summary" must contain EXACTLY 3 to 4 items.
+- Each item is a short, standalone factual bullet (dates, figures, names, actions). No leading dash — that is added later.
+- Do NOT mention the word "Category" or restate the sentiment inside the summary bullets.
+- Do NOT include any text outside the JSON object.
+"""
 
     for attempt in range(len(API_KEYS)):
         try:
             client = get_next_client()
             response = client.chat.completions.create(
                 model=GROQ_MODEL,
-                messages=[{"role": "user", "content": prompt}]
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+                temperature=0.2
             )
 
             text = response.choices[0].message.content if response.choices else None
-
             if not text:
-                return "Business Update", "⚪ Neutral", "- No response text generated by AI model."
+                continue
 
-            parts = text.strip().split('|')
-            if len(parts) >= 3:
-                return parts[0].strip(), parts[1].strip(), parts[2].strip()
-            return "Business Update", "⚪ Neutral", f"- {text.strip()}"
+            data = json.loads(text)
+            sentiment = data.get("sentiment", "⚪ Neutral")
+            raw_bullets = data.get("summary", [])
+            bullets = [
+                b.strip().replace("**", "").replace("*", "")
+                for b in raw_bullets if b and b.strip()
+            ][:4]
+
+            if not bullets:
+                bullets = ["No summary could be generated for this filing."]
+
+            summary_text = "\n".join(f"- {b}" for b in bullets)
+            return sentiment, summary_text
 
         except Exception as e:
             print(f"[⚠️ Exception on Key Attempt {attempt + 1}] {e}. Trying next key...")
             continue
 
-    return "Routine", "⚪ Neutral", "- All rotated Groq keys failed to authenticate or execute."
+    return "⚪ Neutral", "- Unable to generate summary (all rotated Groq keys failed)."
 
 def send_telegram_message(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -192,9 +303,12 @@ def check_feed_cycle(is_baseline=False):
             print(f"[Match Found] Analyzing announcement: {title}")
 
             headline_subject, headline_detail = split_headline(desc)
-            category, sentiment, ai_summary = analyze_with_ai(headline_subject, headline_detail)
+            priority_category = classify_priority(headline_subject)
 
-            clean_summary = ai_summary.replace("**", "").replace("*", "")
+            pdf_text = extract_pdf_text(link)
+            details_for_ai = pdf_text if pdf_text else headline_detail
+
+            sentiment, clean_summary = analyze_with_ai(headline_subject, details_for_ai)
 
             doc_text = f"[View PDF Document]({link})" if link else "No Document"
 
@@ -202,7 +316,7 @@ def check_feed_cycle(is_baseline=False):
                 f"🚨 *NEW NSE ANNOUNCEMENT* 🚨\n\n"
                 f"⚡ *Company:* {title}\n\n"
                 f"⏰ *Published:* {pub_date}\n\n"
-                f"📄 *Category:* {category} | {sentiment}\n\n"
+                f"📄 *Category:* {priority_category} | {sentiment}\n\n"
                 f"📝 *Headline:* {headline_subject}\n"
                 f">> {headline_detail}\n\n"
                 f"📝 *AI Summary:* \n{clean_summary}\n\n"
