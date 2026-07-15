@@ -1,6 +1,7 @@
 import os
 import sys
 import io
+import re
 import time
 import json
 import base64
@@ -100,6 +101,32 @@ def classify_priority(subject_text):
             if kw in text:
                 return tier
     return "🟡 Strategic"
+
+def extract_nse_symbol_from_link(link):
+    """NSE archive filenames start with the exact trading symbol
+    (e.g. 'POWERGRID1_...', 'SEAMECLTD_...', 'SUNPHARMA1_...').
+    Extract just that leading alphabetic token for an EXACT-match comparison,
+    instead of loosely searching the whole URL for a ticker substring."""
+    if not link:
+        return ""
+    filename = link.rstrip("/").split("/")[-1]
+    match = re.match(r"^([A-Za-z&]+)", filename)
+    return match.group(1).upper() if match else ""
+
+def is_watchlist_match(title, link, watchlist):
+    """Precise matching to avoid false positives like ticker 'LT' matching inside
+    'SEAMECLTD' or 'FinancialResult'. Primary check is an EXACT match against the
+    NSE symbol embedded in the filing's archive filename. Falls back to a
+    whole-word (not substring) match against the company title only."""
+    symbol_from_link = extract_nse_symbol_from_link(link)
+    if symbol_from_link and symbol_from_link in watchlist:
+        return True
+
+    title_upper = title.upper()
+    for symbol in watchlist:
+        if re.search(rf"\b{re.escape(symbol)}\b", title_upper):
+            return True
+    return False
 
 def get_next_client():
     """Rotates through the available keys sequentially to balance free-tier limits."""
@@ -272,12 +299,29 @@ def check_feed_cycle(is_baseline=False):
 
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     try:
-        response = requests.get(RSS_URL, headers=headers, timeout=10)
-        if response.status_code != 200:
-            print(f"[⚠️] RSS stream unavailable: HTTP {response.status_code}")
+        root = None
+        for fetch_attempt in range(2):  # one retry if the feed download looks truncated
+            response = requests.get(RSS_URL, headers=headers, timeout=15)
+            if response.status_code != 200:
+                print(f"[⚠️] RSS stream unavailable: HTTP {response.status_code}")
+                return
+
+            raw = response.content
+            if b"</rss>" not in raw[-200:] and b"</RSS>" not in raw[-200:]:
+                print(f"[⚠️] RSS response looks truncated (attempt {fetch_attempt + 1}), retrying...")
+                continue
+
+            try:
+                root = ET.fromstring(raw)
+                break
+            except ET.ParseError as pe:
+                print(f"[⚠️] XML parse failed (attempt {fetch_attempt + 1}): {pe}")
+                continue
+
+        if root is None:
+            print("[⚠️] RSS feed could not be parsed after retry, skipping this cycle.")
             return
 
-        root = ET.fromstring(response.content)
         items = root.findall('.//item')
 
         for item in reversed(items):
@@ -299,10 +343,7 @@ def check_feed_cycle(is_baseline=False):
                 if tracking_mode == "All Stocks (Default)":
                     matched = True
                 else:
-                    for symbol in watchlist:
-                        if symbol in title.upper() or symbol in link.upper():
-                            matched = True
-                            break
+                    matched = is_watchlist_match(title, link, watchlist)
 
                 processed_cache[unique_key] = datetime.now()
 
