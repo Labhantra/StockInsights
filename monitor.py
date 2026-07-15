@@ -257,10 +257,18 @@ def send_telegram_message(text):
     except Exception as e:
         print(f"[-] Telegram dispatch network error: {e}")
 
+last_logged_watchlist = None
+
 def check_feed_cycle(is_baseline=False):
+    global last_logged_watchlist
     configs = load_live_configs()
     tracking_mode = configs.get("tracking_mode", "All Stocks (Default)")
     watchlist = [s.upper() for s in configs.get("selected_watchlist", [])]
+
+    watchlist_signature = (tracking_mode, tuple(sorted(watchlist)))
+    if watchlist_signature != last_logged_watchlist:
+        print(f"[🔎] Config changed | Mode: {tracking_mode} | Watchlist: {watchlist}")
+        last_logged_watchlist = watchlist_signature
 
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     try:
@@ -273,59 +281,66 @@ def check_feed_cycle(is_baseline=False):
         items = root.findall('.//item')
 
         for item in reversed(items):
-            title = item.find('title').text if item.find('title') is not None else "UNKNOWN"
-            link = item.find('link').text if item.find('link') is not None else ""
-            desc = item.find('description').text if item.find('description') is not None else ""
-            pub_date = item.find('pubDate').text if item.find('pubDate') is not None else ""
+            try:
+                title = (item.find('title').text or "UNKNOWN") if item.find('title') is not None else "UNKNOWN"
+                link = (item.find('link').text or "") if item.find('link') is not None else ""
+                desc = (item.find('description').text or "") if item.find('description') is not None else ""
+                pub_date = (item.find('pubDate').text or "") if item.find('pubDate') is not None else ""
 
-            unique_key = f"{title}_{pub_date}"
-            if unique_key in processed_cache:
-                continue
+                unique_key = f"{title}_{pub_date}"
+                if unique_key in processed_cache:
+                    continue
 
-            if is_baseline:
+                if is_baseline:
+                    processed_cache[unique_key] = datetime.now()
+                    continue
+
+                matched = False
+                if tracking_mode == "All Stocks (Default)":
+                    matched = True
+                else:
+                    for symbol in watchlist:
+                        if symbol in title.upper() or symbol in link.upper():
+                            matched = True
+                            break
+
                 processed_cache[unique_key] = datetime.now()
+
+                if not matched:
+                    if tracking_mode != "All Stocks (Default)":
+                        print(f"[Skip - No Watchlist Match] {title}")
+                    continue
+
+                print(f"[Match Found] Analyzing announcement: {title}")
+
+                headline_subject, headline_detail = split_headline(desc)
+                priority_category = classify_priority(headline_subject)
+
+                pdf_text = extract_pdf_text(link)
+                details_for_ai = pdf_text if pdf_text else headline_detail
+
+                sentiment, clean_summary = analyze_with_ai(headline_subject, details_for_ai)
+
+                doc_text = f"[View PDF Document]({link})" if link else "No Document"
+
+                message = (
+                    f"🚨 *NEW NSE ANNOUNCEMENT* 🚨\n\n"
+                    f"⚡ *Company:* {title}\n\n"
+                    f"⏰ *Published:* {pub_date}\n\n"
+                    f"📄 *Priority:* {priority_category}\n\n"
+                    f"💭 *Sentiment:* {sentiment}\n\n"
+                    f"📝 *Headline:* {headline_subject}\n"
+                    f">> {headline_detail}\n\n"
+                    f"📝 *AI Summary:* \n{clean_summary}\n\n"
+                    f"📎 *Filing Document:* {doc_text}"
+                )
+
+                send_telegram_message(message)
+                time.sleep(1)
+
+            except Exception as item_error:
+                print(f"[⚠️] Error processing a single feed item — skipping just this item: {item_error}")
                 continue
-
-            matched = False
-            if tracking_mode == "All Stocks (Default)":
-                matched = True
-            else:
-                for symbol in watchlist:
-                    if symbol in title.upper() or symbol in link.upper():
-                        matched = True
-                        break
-
-            processed_cache[unique_key] = datetime.now()
-
-            if not matched:
-                continue
-
-            print(f"[Match Found] Analyzing announcement: {title}")
-
-            headline_subject, headline_detail = split_headline(desc)
-            priority_category = classify_priority(headline_subject)
-
-            pdf_text = extract_pdf_text(link)
-            details_for_ai = pdf_text if pdf_text else headline_detail
-
-            sentiment, clean_summary = analyze_with_ai(headline_subject, details_for_ai)
-
-            doc_text = f"[View PDF Document]({link})" if link else "No Document"
-
-            message = (
-                f"🚨 *NEW NSE ANNOUNCEMENT* 🚨\n\n"
-                f"⚡ *Company:* {title}\n\n"
-                f"⏰ *Published:* {pub_date}\n\n"
-                f"📄 *Priority:* {priority_category}\n\n"
-                f"💭 *Sentiment:* {sentiment}\n\n"
-                f"📝 *Headline:* {headline_subject}\n"
-                f">> {headline_detail}\n\n"
-                f"📝 *AI Summary:* \n{clean_summary}\n\n"
-                f"📎 *Filing Document:* {doc_text}"
-            )
-
-            send_telegram_message(message)
-            time.sleep(1)
 
     except Exception as e:
         print(f"[⚠️] Error during feed processing cycle loop: {e}")
