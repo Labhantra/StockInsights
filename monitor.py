@@ -2,6 +2,7 @@ import os
 import sys
 import io
 import re
+import csv
 import time
 import json
 import base64
@@ -20,6 +21,7 @@ except ImportError:
 # ==========================================
 CHAT_ID = "-1004369470593"
 RSS_URL = "https://nsearchives.nseindia.com/content/RSS/Online_announcements.xml"
+NSE_MASTER_LIST_URL = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
 GROQ_MODEL = "llama-3.1-8b-instant"  # 14,400 requests/day free tier
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 
@@ -46,6 +48,33 @@ if not TELEGRAM_TOKEN:
 current_key_index = 0
 MEMORY_EXPIRY_HOURS = 6
 processed_cache = {}
+
+def fetch_symbol_name_map():
+    """Fetches NSE's own master equities list (ticker -> official company name)
+    once at job startup. Used for exact full-name matching, so e.g. 'RELIANCE'
+    only matches 'Reliance Industries Limited' and never 'Reliance Mutual Fund'
+    (a genuinely different registered entity that just shares a brand word)."""
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        res = requests.get(NSE_MASTER_LIST_URL, headers=headers, timeout=15)
+        if res.status_code != 200:
+            print(f"[⚠️] NSE master list fetch returned {res.status_code}; full-name matching disabled this run.")
+            return {}
+        lines = res.content.decode("utf-8").splitlines()
+        reader = csv.DictReader(lines)
+        mapping = {}
+        for row in reader:
+            sym = (row.get("SYMBOL") or "").strip().upper()
+            name = (row.get("NAME OF COMPANY") or "").strip()
+            if sym and name:
+                mapping[sym] = name
+        return mapping
+    except Exception as e:
+        print(f"[⚠️] NSE master list fetch failed: {e}; full-name matching disabled this run.")
+        return {}
+
+SYMBOL_NAME_MAP = fetch_symbol_name_map()
+print(f"[Sync] Loaded {len(SYMBOL_NAME_MAP)} symbol-to-company-name mappings from NSE master list.")
 
 # ==========================================
 # DETERMINISTIC PRIORITY-TIER CLASSIFICATION
@@ -102,6 +131,32 @@ def classify_priority(subject_text):
                 return tier
     return "🟡 Strategic"
 
+FUND_EXCLUSION_KEYWORDS = [
+    "mutual fund", " etf", "exchange traded fund", "asset management company",
+    "declaration of nav", "net asset value"
+]
+
+def is_fund_or_etf_announcement(title, subject, detail):
+    """Fund houses (e.g. 'Reliance Mutual Fund', 'PNB Mutual Fund') often share a brand
+    word with an unrelated tracked stock ticker. These are a structurally different
+    announcement category (NAV declarations), so they're excluded from stock matching
+    entirely rather than relying on name-text disambiguation, which can't reliably tell
+    the AMC apart from the equity company by text alone."""
+    combined = f"{title} {subject} {detail}".lower()
+    return any(kw in combined for kw in FUND_EXCLUSION_KEYWORDS)
+
+def normalize_company_name(name):
+    """Uppercases, strips punctuation, removes common corporate suffixes, and
+    removes all spaces — so 'Reliance Industries Limited' and 'RELIANCE
+    INDUSTRIES LTD' normalize to the same tight string for exact comparison."""
+    if not name:
+        return ""
+    text = name.upper()
+    text = re.sub(r"[^A-Z0-9 ]", " ", text)
+    for suffix in [" LIMITED", " LTD", " PRIVATE", " PVT", " COMPANY", " CO "]:
+        text = text.replace(suffix, " ")
+    return re.sub(r"\s+", "", text)
+
 def extract_nse_symbol_from_link(link):
     """NSE archive filenames start with the exact trading symbol
     (e.g. 'POWERGRID1_...', 'SEAMECLTD_...', 'SUNPHARMA1_...').
@@ -114,18 +169,29 @@ def extract_nse_symbol_from_link(link):
     return match.group(1).upper() if match else ""
 
 def is_watchlist_match(title, link, watchlist):
-    """Precise matching to avoid false positives like ticker 'LT' matching inside
-    'SEAMECLTD' or 'FinancialResult'. Primary check is an EXACT match against the
-    NSE symbol embedded in the filing's archive filename. Falls back to a
-    whole-word (not substring) match against the company title only."""
+    """Precise matching, checked in order:
+    1. Filename symbol EXACT match — fast, and correct for most filings.
+    2. Full company-name EXACT match (via NSE's own master list) — this is what
+       actually distinguishes 'Reliance Industries Limited' from 'Reliance Mutual
+       Fund': they normalize to different strings, not just similar-looking text.
+    3. Prefix match on the normalized title as a last-resort fallback, for the
+       rare case a symbol isn't in the master list at all.
+    """
     symbol_from_link = extract_nse_symbol_from_link(link)
     if symbol_from_link and symbol_from_link in watchlist:
         return True
 
-    title_upper = title.upper()
+    title_normalized = normalize_company_name(title)
+
     for symbol in watchlist:
-        if re.search(rf"\b{re.escape(symbol)}\b", title_upper):
+        official_name = SYMBOL_NAME_MAP.get(symbol)
+        if official_name and normalize_company_name(official_name) == title_normalized:
             return True
+
+    for symbol in watchlist:
+        if symbol not in SYMBOL_NAME_MAP and title_normalized.startswith(symbol):
+            return True
+
     return False
 
 def get_next_client():
@@ -339,9 +405,13 @@ def check_feed_cycle(is_baseline=False):
                     processed_cache[unique_key] = datetime.now()
                     continue
 
+                headline_subject, headline_detail = split_headline(desc)
+
                 matched = False
                 if tracking_mode == "All Stocks (Default)":
                     matched = True
+                elif is_fund_or_etf_announcement(title, headline_subject, headline_detail):
+                    print(f"[Skip - Fund/ETF Excluded] {title}")
                 else:
                     matched = is_watchlist_match(title, link, watchlist)
 
@@ -354,7 +424,6 @@ def check_feed_cycle(is_baseline=False):
 
                 print(f"[Match Found] Analyzing announcement: {title}")
 
-                headline_subject, headline_detail = split_headline(desc)
                 priority_category = classify_priority(headline_subject)
 
                 pdf_text = extract_pdf_text(link)
