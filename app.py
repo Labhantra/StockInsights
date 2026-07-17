@@ -73,8 +73,10 @@ GH_PAT = os.environ.get("GH_PAT")
 GITHUB_REPOSITORY = os.environ.get("GITHUB_REPOSITORY")  # e.g. "Username/RepoName"
 
 @st.cache_data(ttl=86400)
-def get_master_nse_tickers():
-    """Fetches full valid master equities ticker list from exchange source records."""
+def get_master_nse_data():
+    """Fetches the full master equities list (ticker + official company name)
+    from NSE's own records, so the search box can show 'JIOFIN: Jio Financial
+    Services Ltd' and monitor.py can match on full company name too."""
     url = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
@@ -83,13 +85,26 @@ def get_master_nse_tickers():
             lines = r.content.decode('utf-8').splitlines()
             df = pd.read_csv(requests.compat.StringIO('\n'.join(lines)))
             df.columns = df.columns.str.strip()
-            tickers = df['SYMBOL'].dropna().astype(str).str.strip().tolist()
-            return sorted(list(set([t for t in tickers if t and t.upper() != "SYMBOL"])))
+            df = df.dropna(subset=['SYMBOL'])
+            df['SYMBOL'] = df['SYMBOL'].astype(str).str.strip().str.upper()
+
+            name_col = 'NAME OF COMPANY' if 'NAME OF COMPANY' in df.columns else None
+            symbol_name_map = {}
+            if name_col:
+                for _, row in df.iterrows():
+                    sym = row['SYMBOL']
+                    name = str(row[name_col]).strip()
+                    if sym and sym != "SYMBOL" and name and name.lower() != "nan":
+                        symbol_name_map[sym] = name
+
+            tickers = sorted(symbol_name_map.keys()) if symbol_name_map else sorted(df['SYMBOL'].unique().tolist())
+            return tickers, symbol_name_map
     except Exception:
         pass
-    return ["SUZLON", "POWERGRID", "HCLTECH", "RELIANCE", "TCS", "SBIN", "HDFCBANK"]
+    fallback_tickers = ["SUZLON", "POWERGRID", "HCLTECH", "RELIANCE", "TCS", "SBIN", "HDFCBANK"]
+    return fallback_tickers, {}
 
-NSE_TICKERS = get_master_nse_tickers()
+NSE_TICKERS, SYMBOL_NAME_MAP = get_master_nse_data()
 
 # --- GITHUB FILE PERSISTENCE HANDLERS ---
 def load_repo_config():
@@ -164,6 +179,7 @@ with tab1:
         options=NSE_TICKERS,
         index=None,
         placeholder="Ticker search...",
+        format_func=lambda x: f"{x}: {SYMBOL_NAME_MAP.get(x, '')}" if SYMBOL_NAME_MAP.get(x) else x,
         label_visibility="collapsed",
         key=f"search_select_{st.session_state.search_key_counter}"
     )
