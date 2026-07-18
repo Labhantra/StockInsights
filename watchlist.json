@@ -2,7 +2,6 @@
   "tracking_mode": "Filtered Custom Watchlist",
   "selected_watchlist": [
     "SUZLON",
-    "HDFCBANK",
     "KOTAKBANK",
     "ADANIPORTS",
     "POWERGRID",
@@ -112,7 +111,8 @@
     "HINDALCO",
     "HINDZINC",
     "HINDPETRO",
-    "HINDUNILVR"
+    "HINDUNILVR",
+    "HDFCBANK"
   ],
   "high_value_keywords": [
     "FINANCIAL RESULTS",
