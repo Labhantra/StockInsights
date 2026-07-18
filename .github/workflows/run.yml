@@ -1,10 +1,15 @@
 name: High-Speed Exchange Relay Engine
 
 on:
-  push:
-    branches:
-      - main
-  workflow_dispatch: # Allows you to manually trigger the script from the GitHub website or app
+  workflow_dispatch: # Manual trigger from GitHub website/app, and the internal handover dispatch
+
+# Ensures only ONE instance of this workflow ever runs at a time. If a new run is
+# triggered (manual, or the handover dispatch) while another is still active, the
+# older one is automatically cancelled instead of running in parallel and causing
+# duplicate Telegram alerts.
+concurrency:
+  group: nse-monitor-singleton
+  cancel-in-progress: true
 
 jobs:
   monitor-stream:
