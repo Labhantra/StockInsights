@@ -49,14 +49,42 @@ current_key_index = 0
 MEMORY_EXPIRY_HOURS = 6
 processed_cache = {}
 
+# ==========================================
+# NSE SESSION HANDLING
+# NSE's site expects a valid session cookie (obtained by visiting the homepage)
+# before it will reliably serve data/document endpoints. Skipping this step is a
+# common reason for aggressive rate-limiting/throttling of script traffic.
+# ==========================================
+NSE_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                   "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+}
+
+nse_session = requests.Session()
+nse_session.headers.update(NSE_HEADERS)
+
+def prime_nse_session():
+    """Visits NSE's homepage once to obtain a valid session cookie, then reuses
+    that cookie for all subsequent RSS/PDF/master-list requests via nse_session."""
+    try:
+        nse_session.get("https://www.nseindia.com/", timeout=15)
+        print("[🍪] NSE session cookie established.")
+        return True
+    except Exception as e:
+        print(f"[⚠️] Could not establish NSE session cookie: {e}. Continuing without it.")
+        return False
+
+prime_nse_session()
+
 def fetch_symbol_name_map():
     """Fetches NSE's own master equities list (ticker -> official company name)
     once at job startup. Used for exact full-name matching, so e.g. 'RELIANCE'
     only matches 'Reliance Industries Limited' and never 'Reliance Mutual Fund'
     (a genuinely different registered entity that just shares a brand word)."""
-    headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        res = requests.get(NSE_MASTER_LIST_URL, headers=headers, timeout=15)
+        res = nse_session.get(NSE_MASTER_LIST_URL, timeout=22)
         if res.status_code != 200:
             print(f"[⚠️] NSE master list fetch returned {res.status_code}; full-name matching disabled this run.")
             return {}
@@ -254,8 +282,8 @@ def extract_pdf_text(link, max_chars=6000, max_bytes=8_000_000, max_pages=6):
     if not link or PdfReader is None:
         return ""
     try:
-        headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(link, headers=headers, timeout=15, stream=True)
+        time.sleep(1)  # small spacing so back-to-back matches don't burst-hit NSE at once
+        res = nse_session.get(link, timeout=22, stream=True)
         if res.status_code != 200:
             return ""
 
@@ -363,11 +391,10 @@ def check_feed_cycle(is_baseline=False):
         print(f"[🔎] Config changed | Mode: {tracking_mode} | Watchlist: {watchlist}")
         last_logged_watchlist = watchlist_signature
 
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     try:
         root = None
         for fetch_attempt in range(2):  # one retry if the feed download looks truncated
-            response = requests.get(RSS_URL, headers=headers, timeout=15)
+            response = nse_session.get(RSS_URL, timeout=22)
             if response.status_code != 200:
                 print(f"[⚠️] RSS stream unavailable: HTTP {response.status_code}")
                 return
@@ -491,8 +518,22 @@ if __name__ == "__main__":
     print(f"[🔥] Launching Action Monitor System Node: {datetime.now()}")
 
     print("[Sync] Building tracking indexing baseline...")
-    check_feed_cycle(is_baseline=True)
-    print(f"[Sync] Complete. Indexed {len(processed_cache)} elements.")
+    baseline_attempt = 0
+    while True:
+        baseline_attempt += 1
+        check_feed_cycle(is_baseline=True)
+        if len(processed_cache) > 0:
+            break
+        print(f"[⚠️] Baseline sync attempt {baseline_attempt} produced an empty cache "
+              f"(likely a truncated/failed feed fetch) — retrying to avoid re-alerting "
+              f"everything the previous job already sent.")
+        if baseline_attempt >= 10:
+            print("[❌ CRITICAL] Baseline sync failed 10 times in a row. Proceeding anyway — "
+                  "some duplicate alerts may occur this run.")
+            break
+        time.sleep(5)
+
+    print(f"[Sync] Complete. Indexed {len(processed_cache)} elements after {baseline_attempt} attempt(s).")
 
     RUN_DURATION = 21000
     CHECK_INTERVAL = 10
@@ -503,6 +544,8 @@ if __name__ == "__main__":
         loop_count += 1
         if loop_count % 30 == 0:
             clean_expired_cache()
+        if loop_count % 200 == 0:  # roughly every ~33 minutes at a 10s interval
+            prime_nse_session()
 
         check_feed_cycle(is_baseline=False)
         time.sleep(CHECK_INTERVAL)
