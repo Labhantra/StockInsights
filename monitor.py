@@ -540,7 +540,7 @@ if __name__ == "__main__":
     start_time = time.time()
     loop_count = 0
 
-    while time.time() - start_time < RUN_DURATION:
+    while True:
         loop_count += 1
         if loop_count % 30 == 0:
             clean_expired_cache()
@@ -549,6 +549,3 @@ if __name__ == "__main__":
 
         check_feed_cycle(is_baseline=False)
         time.sleep(CHECK_INTERVAL)
-
-    print("[⏰] Window limit reached. Initiating script handoff relay chain...")
-    trigger_workflow_handover()
