@@ -78,13 +78,26 @@ def prime_nse_session():
 
 prime_nse_session()
 
+def resilient_get(url, timeout=9, max_attempts=2, **kwargs):
+    """Attempts a GET (via the shared NSE session) up to max_attempts times, no
+    backoff pause between tries. Prioritizes speed: a failing request is abandoned
+    quickly and picked up on the next ~10s monitoring cycle, rather than stalling
+    the current cycle for a long retry-with-backoff chain."""
+    last_exception = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return nse_session.get(url, timeout=timeout, **kwargs)
+        except Exception as e:
+            last_exception = e
+    raise last_exception
+
 def fetch_symbol_name_map():
     """Fetches NSE's own master equities list (ticker -> official company name)
     once at job startup. Used for exact full-name matching, so e.g. 'RELIANCE'
     only matches 'Reliance Industries Limited' and never 'Reliance Mutual Fund'
     (a genuinely different registered entity that just shares a brand word)."""
     try:
-        res = nse_session.get(NSE_MASTER_LIST_URL, timeout=22)
+        res = resilient_get(NSE_MASTER_LIST_URL, timeout=20, max_attempts=3)
         if res.status_code != 200:
             print(f"[⚠️] NSE master list fetch returned {res.status_code}; full-name matching disabled this run.")
             return {}
@@ -283,7 +296,7 @@ def extract_pdf_text(link, max_chars=6000, max_bytes=8_000_000, max_pages=6):
         return ""
     try:
         time.sleep(1)  # small spacing so back-to-back matches don't burst-hit NSE at once
-        res = nse_session.get(link, timeout=22, stream=True)
+        res = resilient_get(link, stream=True)
         if res.status_code != 200:
             return ""
 
@@ -394,7 +407,7 @@ def check_feed_cycle(is_baseline=False):
     try:
         root = None
         for fetch_attempt in range(2):  # one retry if the feed download looks truncated
-            response = nse_session.get(RSS_URL, timeout=22)
+            response = resilient_get(RSS_URL)
             if response.status_code != 200:
                 print(f"[⚠️] RSS stream unavailable: HTTP {response.status_code}")
                 return
@@ -540,7 +553,7 @@ if __name__ == "__main__":
     start_time = time.time()
     loop_count = 0
 
-    while True:
+    while time.time() - start_time < RUN_DURATION:
         loop_count += 1
         if loop_count % 30 == 0:
             clean_expired_cache()
@@ -549,3 +562,6 @@ if __name__ == "__main__":
 
         check_feed_cycle(is_baseline=False)
         time.sleep(CHECK_INTERVAL)
+
+    print("[⏰] Window limit reached. Initiating script handoff relay chain...")
+    trigger_workflow_handover()
