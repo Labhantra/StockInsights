@@ -46,7 +46,9 @@ if not TELEGRAM_TOKEN:
     sys.exit(1)
 
 current_key_index = 0
-MEMORY_EXPIRY_HOURS = 6
+MEMORY_EXPIRY_HOURS = 24  # extended from 6h: NSE keeps items in the RSS feed longer than
+# 6 hours within a trading day, so a shorter expiry caused already-alerted items to be
+# "forgotten" and re-sent as duplicates once their cache entry expired while still live.
 processed_cache = {}
 
 # ==========================================
@@ -553,7 +555,7 @@ if __name__ == "__main__":
     start_time = time.time()
     loop_count = 0
 
-    while time.time() - start_time < RUN_DURATION:
+    while True:
         loop_count += 1
         if loop_count % 30 == 0:
             clean_expired_cache()
@@ -562,6 +564,3 @@ if __name__ == "__main__":
 
         check_feed_cycle(is_baseline=False)
         time.sleep(CHECK_INTERVAL)
-
-    print("[⏰] Window limit reached. Initiating script handoff relay chain...")
-    trigger_workflow_handover()
